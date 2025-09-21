@@ -8,7 +8,7 @@ This is a documentation for important functions
 
 
 
-## 1. incremental_cyclic_fea( )
+## 1. incremental_cyclic_fea()
 ### Overview
 what does this function do
 
@@ -56,17 +56,52 @@ what does this function do
 ### Internal Funcitons
 #### eps()
 - __Overview__
-     calculate strain tensor from displacement: 
-    $[\varepsilon_{rr}, \varepsilon_{\theta\theta}, \varepsilon_{zz}, \varepsilon_{rz}] \rightarrow
-    \begin{bmatrix}
-    \varepsilon_{rr} & \varepsilon_{r\theta} & \varepsilon_{rz} \\
-    \varepsilon_{r\theta} & \varepsilon_{\theta\theta} & \varepsilon_{\theta z} \\
-    \varepsilon_{rz} & \varepsilon_{\theta z} & \varepsilon_{zz}
+     calculate strain tensor from displacement for the axisymmetric problem: 
+    $\bm{u} = u_r(r,z)\bm{e_r} + u_z(r,z)\bm{e_z}$ <br>
+    $\varepsilon$ = $\begin{bmatrix}
+                        \frac{\partial u_r}{\partial r} & 0 & \frac{1}{2}(\frac{\partial u_r}{\partial z} + \frac{\partial u_z}{\partial r}) \\
+                        0 & \frac{u_r}{r} & 0 \\
+                        \frac{1}{2}(\frac{\partial u_r}{\partial z} + \frac{\partial u_z}{\partial r}) & 0 & \frac{\partial u_z}{\partial z}
+                    \end{bmatrix}$
+- __Parameters__
+    - ___v___: _list_,
+    displacement vector [$u_r$, $u_z$]
+- __Returns__
+    - ___eps___: _UFL ListTensor object_,
+    $\begin{bmatrix}
+        \varepsilon_{rr} & \varepsilon_{r\theta} & \varepsilon_{rz} \\
+        \varepsilon_{r\theta} & \varepsilon_{\theta\theta} & \varepsilon_{\theta z} \\
+        \varepsilon_{rz} & \varepsilon_{\theta z} & \varepsilon_{zz}
     \end{bmatrix}$
 
-
+#### eps_to_vector()
+- __Overview__
+     calculate strain components from displacement for the axisymmetric problem: 
+    $\bm{u} = u_r(r,z)\bm{e_r} + u_z(r,z)\bm{e_z}$ <br>
+    $\varepsilon$ = $\begin{bmatrix}
+                        \frac{\partial u_r}{\partial r} & 0 & \frac{1}{2}(\frac{\partial u_r}{\partial z} + \frac{\partial u_z}{\partial r}) \\
+                        0 & \frac{u_r}{r} & 0 \\
+                        \frac{1}{2}(\frac{\partial u_r}{\partial z} + \frac{\partial u_z}{\partial r}) & 0 & \frac{\partial u_z}{\partial z}
+                    \end{bmatrix}$
 - __Parameters__
+    - ___v___: _list_,
+    displacement vector [$u_r$, $u_z$]
 - __Returns__
+    - ___eps___: _UFL ListTensor object_,
+    [$\varepsilon_{rr}$, $\varepsilon_{\theta\theta}$, $\varepsilon_{zz}$, $\varepsilon_{rz}$]
+
+#### sigma()
+- __Overview__
+     calculate stress using linear thermoelastic constitutive relationship: 
+    $\bm{\sigma} = \big[\lambda \text{tr}(\varepsilon) - (3\lambda+2\mu)\alpha \Delta T\big] \bm{I} + 2\mu \bm{\varepsilon} $
+- __Parameters__
+    - ___v___: _list_,
+    displacement vector [$u_r$, $u_z$]
+    - ___dT___: _dolfin Function object_,
+    $\Delta T$
+- __Returns__
+    - ___sigma___: _UFL ListTensor object_,
+    $\bm{\sigma}$?????????
 
 ### Line-by-line Explanation
 
