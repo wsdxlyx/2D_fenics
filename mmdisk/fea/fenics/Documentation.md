@@ -125,115 +125,125 @@ Hardening modulus $H = \frac{E E_t}{E-E_t}$
 
 
 ```python
-# DEFINE THERMAL PROBLEM
+# DEFINE THERMAL PROBLEM WITH BACKWARD EULER DISCRETIZATION
 V = FunctionSpace(mesh, "P", 1).   # TEMPERATURE FUNCTION SPACE
 v = TestFunction(V)                # TEST FUNCTION
 x = SpatialCoordinate(mesh)        # COORDIANTES
 T_initial = Constant(0.0)          # INITIAL TEMPERATURE
-T_pre = interpolate(T_initial, V)  # T^(n+1)
-T_old = interpolate(T_initial, V)  # ** Temp. at last mechanical step **
-T_crt = TrialFunction(V)
-dt = Constant(1.0)
+T_pre = interpolate(T_initial, V)  # LAST THERMAL STEP TEMPERATURE T^(n+1)
+T_old = interpolate(T_initial, V)  # LAST MECHANICAL STEP TEMPERATURE
+T_crt = TrialFunction(V)           # CURRENT THERMAL STEP TEMPERATURE T^n
+dt = Constant(1.0)                 # THERMAL TIME STEP
 F_thermal = (rho * cp * (T_crt - T_pre) / dt) * v * x[0] * dx + kappa * dot(
     grad(T_crt), grad(v)
-) * x[0] * dx
+) * x[0] * dx                      # WEAK FORM 
 a_thermal, L_thermal = lhs(F_thermal), rhs(F_thermal)
 ```
+$\int_0^R \rho C_p \frac{T^{n+1} - T^n}{\Delta t} \, v \, r \, dr + \int_0^R k \frac{d T^{n+1}}{dr} \frac{dv}{dr} \, r \, dr = 0 \\$
+$\implies$ $\int_0^R \rho C_p \frac{T^{n+1}}{\Delta t}  v \, r \, dr + \int_0^R k \frac{d T^{n+1}}{dr} \frac{dv}{dr} \, r \, dr = \int_0^R \rho C_p \frac{T^n}{\Delta t}  v \, r \, dr$
    
+```python
+# DEFINE MECHANICAL PROBLEM
+U = VectorFunctionSpace(mesh, "CG", 1)  # DISPLACEMENT FUNCTION SPACE ON NODES
+We = VectorElement(
+    "Quadrature", mesh.ufl_cell(), degree=1, dim=4, quad_scheme="default"
+)                                       # DEFINE 4-COMPONENT VECTOR QUADRATURE ELEMENT
+W = FunctionSpace(mesh, We)             # DEFINE FUNCTION SPACE ON 4-COMPONENT VECTOR QUADRATURE ELEMENT
+W0e = FiniteElement("Quadrature", mesh.ufl_cell(), degree=1, quad_scheme="default")  # DEFINE SCALAR QUADRATURE ELEMENT
+W0 = FunctionSpace(mesh, W0e)           # DEFINE FUNCTION SPACE ON SCALAR QUADRATURE ELEMENT
 
-    # DEFINE MECH PROBLEM
-    U = VectorFunctionSpace(mesh, "CG", 1)
-    We = VectorElement(
-        "Quadrature", mesh.ufl_cell(), degree=1, dim=4, quad_scheme="default"
+metadata = {"quadrature_degree": 1, "quadrature_scheme": "default"}  # DEFINE GAUSSIAN QUADRATURE SCHEME
+dxm = dx(metadata=metadata)  # APPLY THE QUADRATURE SCHEME TO THE MEASURE DX 
+
+# OBTAIN VARIABLES FROM FUNCTION SPACES
+sig = Function(W)         # CURRENT STEP STRESS
+sig_old = Function(W)     # LAST STEP STRESS  
+n_elas = Function(W)      # ????????
+strain = Function(W, name="Strain vector")          # CURRENT STRAIN
+
+beta = Function(W0)       # ?????????
+p = Function(W0, name="Cumulative plastic strain")  # CUMULATIVE PLASTIC STRAIN (PEEQ IN ABAQUS)
+
+u = Function(U, name="Total displacement")          # TOTAL DISPLACEMENT
+du = Function(U, name="Iteration correction")       # RETURN MAPPING CORRETION DISPLACEMENT
+Du = Function(U, name="Current increment")          # STEP INCREMENTAL DISPLACEMENT
+v_ = TrialFunction(U)     # UNKNOWN VARIABLE TO CONSTRUCT LINEAR SYSTEM
+u_ = TestFunction(U)      # TRIAL FUNCTION IN WEAK FORM
+```
+
+```python
+# DEFINE INTERNAL FUNCTIONS
+def eps(v):
+    return sym(
+        as_tensor(
+            [
+                [v[0].dx(0), 0, v[0].dx(1)],
+                [0, v[0] / x[0], 0],
+                [v[1].dx(0), 0, v[1].dx(1)],
+            ]
+        )
     )
-    W = FunctionSpace(mesh, We)
-    W0e = FiniteElement("Quadrature", mesh.ufl_cell(), degree=1, quad_scheme="default")
-    W0 = FunctionSpace(mesh, W0e)
 
-    metadata = {"quadrature_degree": 1, "quadrature_scheme": "default"}
-    dxm = dx(metadata=metadata)
+def eps_to_vector(v):
+    """Convert strain tensor to vector format [eps_rr, eps_theta, eps_zz, eps_rz]"""
+    eps_tensor = eps(v)
+    return as_vector(
+        [eps_tensor[0, 0], eps_tensor[1, 1], eps_tensor[2, 2], eps_tensor[0, 2]]
+    )
 
-    sig = Function(W)
-    sig_old = Function(W)
-    n_elas = Function(W)
-    beta = Function(W0)
-    p = Function(W0, name="Cumulative plastic strain")
-    strain = Function(W, name="Strain vector")
-    u = Function(U, name="Total displacement")
-    du = Function(U, name="Iteration correction")
-    Du = Function(U, name="Current increment")
-    v_ = TrialFunction(U)
-    u_ = TestFunction(U)
+def sigma(v, dT):
+    return (lmbda * tr(eps(v)) - alpha_V * (3 * lmbda + 2 * mu) * dT) * Identity(
+        3
+    ) + 2.0 * mu * eps(v)
 
-    def eps(v):
-        return sym(
-            as_tensor(
-                [
-                    [v[0].dx(0), 0, v[0].dx(1)],
-                    [0, v[0] / x[0], 0],
-                    [v[1].dx(0), 0, v[1].dx(1)],
-                ]
-            )
-        )
+def proj_sig(v, dT, old_sig, old_p):
+    sig_n = as_3D_tensor(old_sig)
+    sig_elas = sig_n + sigma(v, dT)
+    s = dev(sig_elas)
+    sig_eq = sqrt(3 / 2.0 * inner(s, s))
+    f_elas = sig_eq - sig0 - H * old_p
+    dp = ppos(f_elas) / (3 * mu + H)
+    n_elas = s / sig_eq * ppos(f_elas) / f_elas
+    beta = 3 * mu * dp / sig_eq
+    new_sig = sig_elas - beta * s
+    return (
+        as_vector([new_sig[0, 0], new_sig[1, 1], new_sig[2, 2], new_sig[0, 2]]),
+        as_vector([n_elas[0, 0], n_elas[1, 1], n_elas[2, 2], n_elas[0, 2]]),
+        beta,
+        dp,
+    )
 
-    def eps_to_vector(v):
-        """Convert strain tensor to vector format [eps_rr, eps_theta, eps_zz, eps_rz]"""
-        eps_tensor = eps(v)
-        return as_vector(
-            [eps_tensor[0, 0], eps_tensor[1, 1], eps_tensor[2, 2], eps_tensor[0, 2]]
-        )
+def update_sig_thermal(dT, old_sig):
+    sig_n = as_3D_tensor(old_sig)
+    new_sig = sig_n - alpha_V * (3 * lmbda + 2 * mu) * dT * Identity(3)
+    return as_vector([new_sig[0, 0], new_sig[1, 1], new_sig[2, 2], new_sig[0, 2]])
 
-    def sigma(v, dT):
-        return (lmbda * tr(eps(v)) - alpha_V * (3 * lmbda + 2 * mu) * dT) * Identity(
-            3
-        ) + 2.0 * mu * eps(v)
+def sigma_tang(v):
+    N_elas = as_3D_tensor(n_elas)
+    e = eps(v)
+    return (
+        lmbda * tr(e) * Identity(3)
+        + 2.0 * mu * e
+        - 3 * mu * (3 * mu / (3 * mu + H) - beta) * inner(N_elas, e) * N_elas
+        - 2 * mu * beta * dev(e)
+    )
 
-    def proj_sig(v, dT, old_sig, old_p):
-        sig_n = as_3D_tensor(old_sig)
-        sig_elas = sig_n + sigma(v, dT)
-        s = dev(sig_elas)
-        sig_eq = sqrt(3 / 2.0 * inner(s, s))
-        f_elas = sig_eq - sig0 - H * old_p
-        dp = ppos(f_elas) / (3 * mu + H)
-        n_elas = s / sig_eq * ppos(f_elas) / f_elas
-        beta = 3 * mu * dp / sig_eq
-        new_sig = sig_elas - beta * s
-        return (
-            as_vector([new_sig[0, 0], new_sig[1, 1], new_sig[2, 2], new_sig[0, 2]]),
-            as_vector([n_elas[0, 0], n_elas[1, 1], n_elas[2, 2], n_elas[0, 2]]),
-            beta,
-            dp,
-        )
+def local_project(v, V, u=None):
+    dv = TrialFunction(V)
+    v_ = TestFunction(V)
+    a_proj = inner(dv, v_) * dxm
+    b_proj = inner(v, v_) * dxm
+    solver = LocalSolver(a_proj, b_proj)
+    solver.factorize()
+    if u is None:
+        u = Function(V)
+        solver.solve_local_rhs(u)
+        return u
+    else:
+        solver.solve_local_rhs(u)
+        return
+```
 
-    def update_sig_thermal(dT, old_sig):
-        sig_n = as_3D_tensor(old_sig)
-        new_sig = sig_n - alpha_V * (3 * lmbda + 2 * mu) * dT * Identity(3)
-        return as_vector([new_sig[0, 0], new_sig[1, 1], new_sig[2, 2], new_sig[0, 2]])
-
-    def sigma_tang(v):
-        N_elas = as_3D_tensor(n_elas)
-        e = eps(v)
-        return (
-            lmbda * tr(e) * Identity(3)
-            + 2.0 * mu * e
-            - 3 * mu * (3 * mu / (3 * mu + H) - beta) * inner(N_elas, e) * N_elas
-            - 2 * mu * beta * dev(e)
-        )
-
-    def local_project(v, V, u=None):
-        dv = TrialFunction(V)
-        v_ = TestFunction(V)
-        a_proj = inner(dv, v_) * dxm
-        b_proj = inner(v, v_) * dxm
-        solver = LocalSolver(a_proj, b_proj)
-        solver.factorize()
-        if u is None:
-            u = Function(V)
-            solver.solve_local_rhs(u)
-            return u
-        else:
-            solver.solve_local_rhs(u)
-            return
 
     omega_ = Constant(omega)
     F_int = rho * omega_**2 * x[0] * u_[0]
