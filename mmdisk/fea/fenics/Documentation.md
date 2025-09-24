@@ -1,5 +1,5 @@
 # OVERVIEW
-This is a documentation for important functions 
+This is a documentation for important functions in FEniCS incremental FEA developed by Shuheng Liao. Comments are added by Shen Wang.
 
 
 ## CONTENTS
@@ -104,32 +104,42 @@ what does this function do
     $\bm{\sigma}$?????????
 
 ### Line-by-line Explanation
+```python
+if not verbose:
+    set_log_level(LogLevel.ERROR)  # SHOW ONLY ERROR MESSAGE
+else:
+    set_log_level(LogLevel.DEBUG). # SHOW DEBUG MESSAGE
+```
 
-    if not verbose:
-            set_log_level(LogLevel.ERROR)
-        else:
-            set_log_level(LogLevel.DEBUG)
+```python
+# GET MATERIAL PROPERTIES
+rho, cp, kappa, E, sig0, nu, alpha_V = properties
+lmbda = E * nu / (1 + nu) / (1 - 2 * nu)
+mu = E / 2.0 / (1 + nu)
+Et = E / 1e5
+H = E * Et / (E - Et)
+```
+Lame constants $\lambda = \frac{E\nu}{(1+\nu)(1+2\nu)}$, $\mu = \frac{E}{2(1+\nu)}$ 
+Tangent modulus $E_t = E\times10^{-5}$. Need to have non-zero $E_t$, haven't found a better way.
+Hardening modulus $H = \frac{E E_t}{E-E_t}$
 
-    # material properties
-    rho, cp, kappa, E, sig0, nu, alpha_V = properties
-    lmbda = E * nu / (1 + nu) / (1 - 2 * nu)
-    mu = E / 2.0 / (1 + nu)
-    Et = E / 1e5  # tangent modulus - any better method for perfect plasticity?
-    H = E * Et / (E - Et)  # hardening modulus
 
-    # DEFINE THERMAL PROBLEM
-    V = FunctionSpace(mesh, "P", 1)  # Temperature space
-    v = TestFunction(V)
-    x = SpatialCoordinate(mesh)  # Coords
-    T_initial = Constant(0.0)
-    T_pre = interpolate(T_initial, V)  # Temp. at last time step
-    T_old = interpolate(T_initial, V)  # ** Temp. at last mechanical step **
-    T_crt = TrialFunction(V)
-    dt = Constant(1.0)
-    F_thermal = (rho * cp * (T_crt - T_pre) / dt) * v * x[0] * dx + kappa * dot(
-        grad(T_crt), grad(v)
-    ) * x[0] * dx
-    a_thermal, L_thermal = lhs(F_thermal), rhs(F_thermal)
+```python
+# DEFINE THERMAL PROBLEM
+V = FunctionSpace(mesh, "P", 1).   # TEMPERATURE FUNCTION SPACE
+v = TestFunction(V)                # TEST FUNCTION
+x = SpatialCoordinate(mesh)        # COORDIANTES
+T_initial = Constant(0.0)          # INITIAL TEMPERATURE
+T_pre = interpolate(T_initial, V)  # T^(n+1)
+T_old = interpolate(T_initial, V)  # ** Temp. at last mechanical step **
+T_crt = TrialFunction(V)
+dt = Constant(1.0)
+F_thermal = (rho * cp * (T_crt - T_pre) / dt) * v * x[0] * dx + kappa * dot(
+    grad(T_crt), grad(v)
+) * x[0] * dx
+a_thermal, L_thermal = lhs(F_thermal), rhs(F_thermal)
+```
+   
 
     # DEFINE MECH PROBLEM
     U = VectorFunctionSpace(mesh, "CG", 1)
