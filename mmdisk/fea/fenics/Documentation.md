@@ -103,6 +103,18 @@ what does this function do
     - ___sigma___: _UFL ListTensor object_,
     $\bm{\sigma}$?????????
 
+####  sigma_tang()
+- __Overview__
+      
+- __Parameters__
+    - ___v___: _UFL object_,
+    test function
+    - ___dT___: _dolfin Function object_,
+    $\Delta T$
+- __Returns__
+    - ___sigma___: _UFL ListTensor object_,
+    $\bm{\sigma}$?????????
+
 ### Line-by-line Explanation
 ```python
 if not verbose:
@@ -244,7 +256,13 @@ def local_project(v, V, u=None):
         return
 ```
 
+```python
+omega_ = Constant(omega)    # TURN OMEGA VALUE INTO FENICS CONSTANT
+F_int = rho * omega_**2 * x[0] * u_[0]    # CENTRIFUGAL LOAD IN WEAK FORM
 
+a_Newton = inner(eps(v_), sigma_tang(u_)) * x[0] * dxm
+res = -inner(eps(u_), as_3D_tensor(sig)) * x[0] * dxm + F_int * x[0] * dxm
+```
     omega_ = Constant(omega)
     F_int = rho * omega_**2 * x[0] * u_[0]
 
