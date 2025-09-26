@@ -105,15 +105,13 @@ what does this function do
 
 ####  sigma_tang()
 - __Overview__
-      
+      calculate $\Delta \bm{\sigma}$ using given $\Delta \bm{u}$ and consistent tangent modulus in Newton-Raphson alogrithm.
+      $\Delta \bm{\sigma} = \mathbb{C}: \Delta \bm{\varepsilon} = \lambda \,\mathrm{tr}(\Delta\bm{\varepsilon}) \mathbf{I} + 2\mu \Delta\bm{\varepsilon} - 3\mu \left(\frac{3\mu}{3\mu + H} - \beta \right) \left( \bm{N}_{\mathrm{elas}} : \Delta\bm{\varepsilon} \right) \, \bm{N}_{\mathrm{elas}} - 2\mu \beta \, \Delta \bm{\varepsilon}_{dev})$
 - __Parameters__
-    - ___v___: _UFL object_,
-    test function
-    - ___dT___: _dolfin Function object_,
-    $\Delta T$
+    - ___$\Delta \bm{u}$___: _UFL object_,
+    trial function
 - __Returns__
-    - ___sigma___: _UFL ListTensor object_,
-    $\bm{\sigma}$?????????
+    - ___$\Delta \bm{\sigma}$___: _UFL ListTensor object_,
 
 ### Line-by-line Explanation
 ```python
@@ -151,6 +149,7 @@ F_thermal = (rho * cp * (T_crt - T_pre) / dt) * v * x[0] * dx + kappa * dot(
 ) * x[0] * dx                      # WEAK FORM 
 a_thermal, L_thermal = lhs(F_thermal), rhs(F_thermal)
 ```
+Weak form of axisymmetric transient thermal problem <br>
 $\int_0^R \rho C_p \frac{T^{n+1} - T^n}{\Delta t} \, v \, r \, dr + \int_0^R k \frac{d T^{n+1}}{dr} \frac{dv}{dr} \, r \, dr = 0 \\$
 $\implies$ $\int_0^R \rho C_p \frac{T^{n+1}}{\Delta t}  v \, r \, dr + \int_0^R k \frac{d T^{n+1}}{dr} \frac{dv}{dr} \, r \, dr = \int_0^R \rho C_p \frac{T^n}{\Delta t}  v \, r \, dr$
    
@@ -170,17 +169,17 @@ dxm = dx(metadata=metadata)  # APPLY THE QUADRATURE SCHEME TO THE MEASURE DX
 # OBTAIN VARIABLES FROM FUNCTION SPACES
 sig = Function(W)         # CURRENT STEP STRESS
 sig_old = Function(W)     # LAST STEP STRESS  
-n_elas = Function(W)      # ????????
+n_elas = Function(W)      # FLOW DIRECTIONS
 strain = Function(W, name="Strain vector")          # CURRENT STRAIN
 
-beta = Function(W0)       # ?????????
+beta = Function(W0)       # PLASTIC CORRECTION FACTOR
 p = Function(W0, name="Cumulative plastic strain")  # CUMULATIVE PLASTIC STRAIN (PEEQ IN ABAQUS)
 
 u = Function(U, name="Total displacement")          # TOTAL DISPLACEMENT
 du = Function(U, name="Iteration correction")       # RETURN MAPPING CORRETION DISPLACEMENT
 Du = Function(U, name="Current increment")          # STEP INCREMENTAL DISPLACEMENT
 v_ = TrialFunction(U)     # UNKNOWN VARIABLE TO CONSTRUCT LINEAR SYSTEM
-u_ = TestFunction(U)      # TRIAL FUNCTION IN WEAK FORM
+u_ = TestFunction(U)      # TEST FUNCTION IN WEAK FORM
 ```
 
 ```python
@@ -260,59 +259,60 @@ def local_project(v, V, u=None):
 omega_ = Constant(omega)    # TURN OMEGA VALUE INTO FENICS CONSTANT
 F_int = rho * omega_**2 * x[0] * u_[0]    # CENTRIFUGAL LOAD IN WEAK FORM
 
-a_Newton = inner(eps(v_), sigma_tang(u_)) * x[0] * dxm
+a_Newton = inner(eps(v_), sigma_tang(u_)) * x[0] * dxm  # 
 res = -inner(eps(u_), as_3D_tensor(sig)) * x[0] * dxm + F_int * x[0] * dxm
 ```
-    omega_ = Constant(omega)
-    F_int = rho * omega_**2 * x[0] * u_[0]
+$a_{Newton} = \int_{\Omega}  \Delta \bm{\sigma}:\delta\bm{\varepsilon} \, d\Omega $
+$Res =  - \int_{\Omega}  \bm{\sigma}:\delta\bm{\varepsilon} \, d\Omega  + \int_{\Omega}  \bm{f}_{\omega} \cdot \delta\bm{u} \, d\Omega$ 
 
-    a_Newton = inner(eps(v_), sigma_tang(u_)) * x[0] * dxm
-    res = -inner(eps(u_), as_3D_tensor(sig)) * x[0] * dxm + F_int * x[0] * dxm
+Notes from Shen -- it should be `a_Newton = inner(eps(u_), sigma_tang(v_)) * x[0] * dxm`, however given the symmtry of consistent tangent modulus $\mathbb{C}$ for isotropic hardening used here, `a_Newton = inner(eps(v_), sigma_tang(u_)) * x[0] * dxm` also works mathematically.
 
-    ## DEFINE BCs
-    boundary_left, boundary_right, boundary_bot, _ = get_boundary(mesh)
+```python
+## DEFINE BOUNDARY CONDITIONS
+boundary_left, boundary_right, boundary_bot, _ = get_boundary(mesh)  # GET MODEL BOUNDARYS
+T_L = Constant(0.0)  # UFL CONSTANT FOR THE LEFT BOUNDARY TEMPERATURE
+T_R = Constant(0.0)  # UFL CONSTANT FOR THE RIGHT BOUNDARY TEMPERATURE
+T_bc_L = DirichletBC(V, T_L, boundary_left)   # ASSIGN THE LEFT BOUNDARY OF TEMPERATURE FUNCTION SPACE WITH DIRICHLET BC 
+T_bc_R = DirichletBC(V, T_R, boundary_right)  # ASSIGN THE RIGHT BOUNDARY OF TEMPERATURE FUNCTION SPACE WITH DIRICHLET BC 
+Thermal_BC = [T_bc_L, T_bc_R]
 
-    T_L = Constant(0.0)
-    T_R = Constant(0.0)
-    T_bc_L = DirichletBC(V, T_L, boundary_left)
-    T_bc_R = DirichletBC(V, T_R, boundary_right)
-    Thermal_BC = [T_bc_L, T_bc_R]
+U_bc_B = DirichletBC(U.sub(1), 0.0, boundary_bot)   # ASSIGN THE BOTTOM BOUNDARY OF DISPLACEMENT FUNCTION SPACE WITH DIRICHLET BC (FIX Uz DIRECTION DISPLACEMENT)
+# U_bc_L = DirichletBC(U, Constant((0.,0.)), boundary_left)
+U_bc_L = DirichletBC(U.sub(0), 0.0, boundary_left)  # ASSIGN THE BOTTOM BOUNDARY OF DISPLACEMENT FUNCTION SPACE WITH DIRICHLET BC (FIX Ur DIRECTION DISPLACEMENT)
+if Displacement_BC == "fix-free":
+    Mech_BC = [U_bc_B, U_bc_L]
+else:
+    Mech_BC = [U_bc_B]
+```
 
-    U_bc_B = DirichletBC(U.sub(1), 0.0, boundary_bot)
-    #     U_bc_L = DirichletBC(U, Constant((0.,0.)), boundary_left)
-    U_bc_L = DirichletBC(U.sub(0), 0.0, boundary_left)
-    if Displacement_BC == "fix-free":
-        Mech_BC = [U_bc_B, U_bc_L]
-    else:
-        Mech_BC = [U_bc_B]
+```python
+P0 = FunctionSpace(mesh, "DG", 0)   # NON-CONTINUOUS FUNCTION SPACE ON NODES
+p_avg = Function(P0)                # ACCUMULATIVE EQUIVALENT PLASTIC STRAIN
+T_crt = Function(V)                 # CURRENT STEP TEMPERATURE
+dT = Function(V)                    # ????????????????
 
-    P0 = FunctionSpace(mesh, "DG", 0)
-    p_avg = Function(P0)
-    T_crt = Function(V)
-    dT = Function(V)
+output_matches = {
+    "PEEQ": p_avg.vector,
+    "T": T_crt.vector,
+    "u": u.vector,
+    "sig": lambda: project(sig, P0).vector(),
+    "strain": strain.vector,
+}
 
-    output_matches = {
-        "PEEQ": p_avg.vector,
-        "T": T_crt.vector,
-        "u": u.vector,
-        "sig": lambda: project(sig, P0).vector(),
-        "strain": strain.vector,
+if outputs is None:
+    outputs = {"PEEQ": np.zeros((len(t_output), len(p.vector())))}
+elif isinstance(outputs, (list, tuple)):
+    if "PEEQ" not in outputs:
+        outputs.append("PEEQ")
+    outputs = {
+        k: np.zeros((len(t_output), len(output_matches[k]()))) for k in outputs
     }
-
-    if outputs is None:
-        outputs = {"PEEQ": np.zeros((len(t_output), len(p.vector())))}
-    elif isinstance(outputs, (list, tuple)):
-        if "PEEQ" not in outputs:
-            outputs.append("PEEQ")
-        outputs = {
-            k: np.zeros((len(t_output), len(output_matches[k]()))) for k in outputs
-        }
-    else:
-        if "PEEQ" not in outputs:
-            outputs["PEEQ"] = np.zeros((len(t_output), len(output_matches["PEEQ"]())))
-        for k in outputs.keys():
-            outputs[k][:] = 0.0
-
+else:
+    if "PEEQ" not in outputs:
+        outputs["PEEQ"] = np.zeros((len(t_output), len(output_matches["PEEQ"]())))
+    for k in outputs.keys():
+        outputs[k][:] = 0.0
+```
     comp_cycle_marker = np.mod(t_list, period) == 0.0
     out_cycle_marker = np.mod(t_output, period) == 0.0
 
