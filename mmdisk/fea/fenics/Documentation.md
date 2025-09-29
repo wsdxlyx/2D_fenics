@@ -291,6 +291,7 @@ p_avg = Function(P0)                # ACCUMULATIVE EQUIVALENT PLASTIC STRAIN
 T_crt = Function(V)                 # CURRENT STEP TEMPERATURE
 dT = Function(V)                    # ????????????????
 
+# 5 QUANTITIES ARE AVAILABLE TO OUTPUT
 output_matches = {
     "PEEQ": p_avg.vector,
     "T": T_crt.vector,
@@ -313,96 +314,101 @@ else:
     for k in outputs.keys():
         outputs[k][:] = 0.0
 ```
-    comp_cycle_marker = np.mod(t_list, period) == 0.0
-    out_cycle_marker = np.mod(t_output, period) == 0.0
 
-    # Allocate memory for the solver
-    with AbPETScContext() as (A, Res), AbPETScContext() as (At, Lt):
-        for n in range(len(t_list) - 1):
-            dt.assign(t_list[n + 1] - t_list[n])
-            T_R.assign(load(t_list[n + 1]))
-            assemble_system(a_thermal, L_thermal, Thermal_BC, A_tensor=At, b_tensor=Lt)
+```python
+# NP ARRAY TO DEFINE AND OUTPUT THERMAL CYCLES TIME POINTS
+comp_cycle_marker = np.mod(t_list, period) == 0.0
+out_cycle_marker = np.mod(t_output, period) == 0.0
+```
 
-            if comp_cycle_marker[n + 1] and skip_cold:
-                T_crt.assign(interpolate(T_initial, V))
-                T_pre.assign(T_crt)
-            else:
-                solve(At, T_crt.vector(), Lt)
-                T_pre.assign(T_crt)
+ ```python   
+# Allocate memory for the solver
+with AbPETScContext() as (A, Res), AbPETScContext() as (At, Lt):  # ASSEMBLE MECHANICAL AND THERMAL PROBLEMS IN WEAK FORM
+    for n in range(len(t_list) - 1):
+        dt.assign(t_list[n + 1] - t_list[n])  # TIME INCREASE IN EACH MECHANICAL STEP INCREMENT
+        T_R.assign(load(t_list[n + 1]))       # APPLY TEMPERATURE BOUNDARY CONDITION AT THE DISK RIM
+        assemble_system(a_thermal, L_thermal, Thermal_BC, A_tensor=At, b_tensor=Lt)  # ASSEMBLE THERMAL PROBLEM IN WEAK FORM
 
-            if (n + 1) % plastic_inverval == 0:
-                dT.assign(T_crt - T_old)
+        if comp_cycle_marker[n + 1] and skip_cold:  # FORCE THE TEMPERATURE TO BE LOW TEMPERATURE
+            T_crt.assign(interpolate(T_initial, V))
+            T_pre.assign(T_crt)
+        else:
+            solve(At, T_crt.vector(), Lt)   # LET THE TEMPERATURE TO BE CALCULATED EACH TIME STEP
+            T_pre.assign(T_crt)
 
-                sig_ = update_sig_thermal(dT, sig_old)
+        if (n + 1) % plastic_inverval == 0:
+            dT.assign(T_crt - T_old)
+
+            sig_ = update_sig_thermal(dT, sig_old)
+            local_project(sig_, W, sig)
+
+            assemble_system(a_Newton, res, Mech_BC, A_tensor=A, b_tensor=Res)
+
+            Du.interpolate(Constant((0, 0)))
+            nRes0 = Res.norm("l2")
+            nRes = nRes0
+            niter = 0
+            res_tracking = [nRes / nRes0]
+            while nRes / nRes0 > tol and niter < Nitermax:
+                solve(A, du.vector(), Res)
+                Du.assign(Du + du * 1.0)
+                sig_, n_elas_, beta_, dp_ = proj_sig(Du, dT, sig_old, p)
                 local_project(sig_, W, sig)
-
-                assemble_system(a_Newton, res, Mech_BC, A_tensor=A, b_tensor=Res)
-
-                Du.interpolate(Constant((0, 0)))
-                nRes0 = Res.norm("l2")
-                nRes = nRes0
-                niter = 0
-                res_tracking = [nRes / nRes0]
-                while nRes / nRes0 > tol and niter < Nitermax:
-                    solve(A, du.vector(), Res)
-                    Du.assign(Du + du * 1.0)
-                    sig_, n_elas_, beta_, dp_ = proj_sig(Du, dT, sig_old, p)
-                    local_project(sig_, W, sig)
-                    local_project(n_elas_, W, n_elas)
-                    local_project(beta_, W0, beta)
-                    A, Res = assemble_system(
-                        a_Newton, res, Mech_BC, A_tensor=A, b_tensor=Res
-                    )
-                    nRes = Res.norm("l2")
-                    res_tracking.append(nRes / nRes0)
-                    niter += 1
-                    if nRes / nRes0 > tol and niter >= Nitermax:
-                        print(res_tracking)
-                        for k in outputs.keys():
-                            outputs[k][t_output >= t_list[n + 1], :] = np.nan
-                        raise ConvergenceError(
-                            f"Too many iterations at time {t_list[n + 1]} (step {n + 1}) with residual {nRes / nRes0}",
-                            outputs,
-                            res_tracking,
-                        )
-
-                u.assign(u + Du)
-                strain.assign(local_project(eps_to_vector(u), W))
-                p.assign(p + local_project(dp_, W0))
-                p_avg.assign(project(p, P0))
-                T_old.assign(T_crt)
-                sig_old.assign(sig)
-
-                time_point_selector = np.isclose(t_list[n + 1], t_output, rtol=1e-7)
-
-                if time_point_selector.any():
-                    for k in outputs.keys():
-                        out = output_matches[k]().get_local()
-                        if len(outputs[k][time_point_selector].shape) > 2:
-                            out = out.reshape(
-                                (
-                                    # time_point_selector.sum(),
-                                    -1,
-                                    *outputs[k][time_point_selector].shape[2:],
-                                )
-                            )
-                        outputs[k][time_point_selector, : out.shape[0]] = out
-
-            if (
-                np.isclose(t_list[n + 1], period)
-                and np.isclose(outputs["PEEQ"][t_output <= period], 0.0).all()
-            ):
-                # Implement early stopping if within the elastic limits
-                return t_output, outputs, 1
-            elif (t_list[n + 1] >= 5 * period) and (comp_cycle_marker[n + 1]):
-                # Implement early stopping if within the shakedown limits after 30 cycles
-                time_point_selector = t_output <= t_list[n + 1]
-                delta_peeq = np.diff(
-                    outputs["PEEQ"][out_cycle_marker & time_point_selector], axis=0
+                local_project(n_elas_, W, n_elas)
+                local_project(beta_, W0, beta)
+                A, Res = assemble_system(
+                    a_Newton, res, Mech_BC, A_tensor=A, b_tensor=Res
                 )
-                if (delta_peeq[-3:] < 2e-5).all():
-                    return t_output, outputs, 2
+                nRes = Res.norm("l2")
+                res_tracking.append(nRes / nRes0)
+                niter += 1
+                if nRes / nRes0 > tol and niter >= Nitermax:
+                    print(res_tracking)
+                    for k in outputs.keys():
+                        outputs[k][t_output >= t_list[n + 1], :] = np.nan
+                    raise ConvergenceError(
+                        f"Too many iterations at time {t_list[n + 1]} (step {n + 1}) with residual {nRes / nRes0}",
+                        outputs,
+                        res_tracking,
+                    )
 
+            u.assign(u + Du)
+            strain.assign(local_project(eps_to_vector(u), W))
+            p.assign(p + local_project(dp_, W0))
+            p_avg.assign(project(p, P0))
+            T_old.assign(T_crt)
+            sig_old.assign(sig)
+
+            time_point_selector = np.isclose(t_list[n + 1], t_output, rtol=1e-7)
+
+            if time_point_selector.any():
+                for k in outputs.keys():
+                    out = output_matches[k]().get_local()
+                    if len(outputs[k][time_point_selector].shape) > 2:
+                        out = out.reshape(
+                            (
+                                # time_point_selector.sum(),
+                                -1,
+                                *outputs[k][time_point_selector].shape[2:],
+                            )
+                        )
+                    outputs[k][time_point_selector, : out.shape[0]] = out
+
+        if (
+            np.isclose(t_list[n + 1], period)
+            and np.isclose(outputs["PEEQ"][t_output <= period], 0.0).all()
+        ):
+            # Implement early stopping if within the elastic limits
+            return t_output, outputs, 1
+        elif (t_list[n + 1] >= 5 * period) and (comp_cycle_marker[n + 1]):
+            # Implement early stopping if within the shakedown limits after 30 cycles
+            time_point_selector = t_output <= t_list[n + 1]
+            delta_peeq = np.diff(
+                outputs["PEEQ"][out_cycle_marker & time_point_selector], axis=0
+            )
+            if (delta_peeq[-3:] < 2e-5).all():
+                return t_output, outputs, 2
+```
 ### Example
 
 
